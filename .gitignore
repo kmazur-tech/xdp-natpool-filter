@@ -1,0 +1,9 @@
+# host-specific / build artifacts — regenerate on the target host
+vmlinux.h
+*.o
+loader
+prefixes.conf
+gen.err
+
+# local tooling state — never publish
+.claude/
