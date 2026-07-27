@@ -59,17 +59,19 @@ char _license[] SEC("license") = "GPL";
  * from vmlinux.h; on kernels with nf_conntrack built-in it IS in vmlinux.h.
  * Define a local copy under a CO-RE "flavor" name (the ___local suffix is
  * ignored for BTF matching, same pattern as kernel selftests) so both cases
- * compile. 16-byte layout (netns_id, error, l4proto, dir, ct_zone_id,
- * ct_zone_dir, reserved[3]); opts__sz passed to the kfunc must equal
- * sizeof(this). */
+ * compile.
+ *
+ * Use the legacy 12-byte layout: kernels 5.19..6.8 accept ONLY this size
+ * (16-byte with zone fields was added in 6.9, whose kfunc still accepts 12
+ * and then defaults to conntrack zone 0 - exactly what we use). Passing 12
+ * keeps one binary correct across every supported kernel; opts__sz passed to
+ * the kfunc must equal sizeof(this). */
 struct bpf_ct_opts___local {
 	__s32 netns_id;
 	__s32 error;
 	__u8  l4proto;
 	__u8  dir;
-	__u16 ct_zone_id;
-	__u8  ct_zone_dir;
-	__u8  reserved[3];
+	__u8  reserved[2];
 };
 
 /* Unstable CT lookup kfuncs (netfilter, kernel >= 5.19). Provided by the
