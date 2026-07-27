@@ -1,0 +1,80 @@
+# CI for the XDP NAT-pool filter.
+#
+# build: compile the BPF object and the loader on a stock GitHub runner,
+#        with vmlinux.h generated from the runner kernel's own BTF. This is
+#        the required job and drives the badge.
+# test:  load the program into the runner kernel and run the full functional
+#        suite (unit_test.sh, 19 tests) via BPF_PROG_TEST_RUN, including real
+#        conntrack entries. Needs root and the nf_conntrack module BTF, so it
+#        is kernel-dependent; it runs as continue-on-error until proven stable
+#        across runner kernel updates.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (clang + libbpf, vmlinux.h from runner BTF)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev libelf-dev zlib1g-dev \
+            linux-tools-common "linux-tools-$(uname -r)"
+
+      - name: Build
+        run: make
+
+      - name: Sanity-check artifacts
+        run: |
+          test -s natpool_filter.bpf.o
+          test -x loader
+          bpftool btf dump file natpool_filter.bpf.o format c > /dev/null
+
+  test:
+    name: functional tests (BPF_PROG_TEST_RUN on the runner kernel)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Experimental: exercises kfunc resolution against the runner kernel's
+    # nf_conntrack module BTF. Flip to false once stable across kernels.
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install toolchain and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev libelf-dev zlib1g-dev \
+            linux-tools-common "linux-tools-$(uname -r)" conntrack python3
+
+      - name: Build
+        run: make
+
+      - name: Load conntrack modules (kfunc provider for bpf_xdp_ct_lookup)
+        run: |
+          sudo modprobe nf_conntrack
+          sudo modprobe nf_conntrack_netlink
+          uname -r
+
+      - name: Run the functional suite as root
+        run: |
+          ./gen_prefixes.sh nat_pools.conf client_ranges.conf > prefixes.conf
+          sudo ./unit_test.sh

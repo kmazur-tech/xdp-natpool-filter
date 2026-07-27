@@ -1,5 +1,7 @@
 # xdp-natpool-filter
 
+[![CI](https://github.com/kmazur-tech/xdp-natpool-filter/actions/workflows/natpool-ci.yml/badge.svg)](https://github.com/kmazur-tech/xdp-natpool-filter/actions/workflows/natpool-ci.yml)
+
 *Read this in: [English](README.md) | [polski](README.pl.md)*
 
 An XDP filter that protects the **NAT/CGNAT pool** addresses of a router against
