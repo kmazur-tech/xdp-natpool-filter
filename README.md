@@ -22,6 +22,9 @@ bump-in-the-wire — it does not forward packets; it only classifies and
 (optionally) drops at the NIC, otherwise the packet takes the normal kernel
 path.
 
+The filter logic is production-tested: it runs in ISP networks protecting live
+CGNAT pools and has cut real SYN/ACK reflection and UDP amplification floods.
+
 Operator's guide: [OPERATORS.md](OPERATORS.md).
 
 ## Why kernel conntrack instead of own state

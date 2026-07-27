@@ -21,6 +21,9 @@ legalny ruch bez modyfikacji. Nie jest bump-in-the-wire — nie forwarduje pakie
 tylko klasyfikuje i (opcjonalnie) dropuje na karcie; poza tym pakiet leci normalną
 ścieżką kernela.
 
+Logika filtra jest przetestowana produkcyjnie: działa w sieciach ISP, chroniąc
+żywe pule CGNAT, i cięła realne floody SYN/ACK-reflection oraz UDP-amplification.
+
 Instrukcja obsługi dla operatorów: [OPERATORS.pl.md](OPERATORS.pl.md)
 (wersja angielska: [OPERATORS.md](OPERATORS.md)).
 
