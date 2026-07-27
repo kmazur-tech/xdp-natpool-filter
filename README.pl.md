@@ -1,6 +1,7 @@
 # xdp-natpool-filter
 
 [![CI](https://github.com/kmazur-tech/xdp-natpool-filter/actions/workflows/natpool-ci.yml/badge.svg)](https://github.com/kmazur-tech/xdp-natpool-filter/actions/workflows/natpool-ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/kmazur-tech/xdp-natpool-filter)](https://github.com/kmazur-tech/xdp-natpool-filter/releases/latest)
 
 *Wersje językowe: [English](README.md) | [polski](README.pl.md)*
 
