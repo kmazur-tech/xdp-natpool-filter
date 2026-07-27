@@ -36,7 +36,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang llvm libbpf-dev libelf-dev zlib1g-dev \
-            linux-tools-common "linux-tools-$(uname -r)"
+            linux-tools-generic
+
+      # Ubuntu's /usr/sbin/bpftool is a wrapper that insists on a binary
+      # matching the running kernel, which the archive may not have yet for
+      # brand-new runner kernels. Any recent bpftool can dump a BTF file, so
+      # link the real binary from linux-tools-generic ahead of the wrapper.
+      - name: Point bpftool past the kernel-version wrapper
+        run: |
+          BPFTOOL="$(find /usr/lib/linux-tools -name bpftool -type f | sort -V | tail -1)"
+          sudo ln -sf "$BPFTOOL" /usr/local/bin/bpftool
+          bpftool version
 
       - name: Build
         run: make
@@ -63,7 +73,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang llvm libbpf-dev libelf-dev zlib1g-dev \
-            linux-tools-common "linux-tools-$(uname -r)" conntrack python3
+            linux-tools-generic conntrack python3
+
+      - name: Point bpftool past the kernel-version wrapper
+        run: |
+          BPFTOOL="$(find /usr/lib/linux-tools -name bpftool -type f | sort -V | tail -1)"
+          sudo ln -sf "$BPFTOOL" /usr/local/bin/bpftool
+          bpftool version
 
       - name: Build
         run: make
