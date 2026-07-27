@@ -55,11 +55,14 @@ char _license[] SEC("license") = "GPL";
 #define UDP_RATE_INTERVAL_NS 1000000000ULL /* detector tick ~1s; udp_pps = count/tick */
 #define UDP_PPS_THRESHOLD_DEFAULT 200000   /* per-IP pps to engage; tune below your scrubber's UDP ban level */
 
-/* bpf_ct_opts lives in the nf_conntrack module BTF, not vmlinux BTF, so it is
- * absent from vmlinux.h. Define it here matching the confirmed 16-byte layout
- * on kernel 6.12.74 (netns_id, error, l4proto, dir, ct_zone_id, ct_zone_dir,
- * reserved[3]). opts__sz passed to the kfunc must equal sizeof(this). */
-struct bpf_ct_opts {
+/* bpf_ct_opts normally lives in the nf_conntrack module BTF, so it is absent
+ * from vmlinux.h; on kernels with nf_conntrack built-in it IS in vmlinux.h.
+ * Define a local copy under a CO-RE "flavor" name (the ___local suffix is
+ * ignored for BTF matching, same pattern as kernel selftests) so both cases
+ * compile. 16-byte layout (netns_id, error, l4proto, dir, ct_zone_id,
+ * ct_zone_dir, reserved[3]); opts__sz passed to the kfunc must equal
+ * sizeof(this). */
+struct bpf_ct_opts___local {
 	__s32 netns_id;
 	__s32 error;
 	__u8  l4proto;
@@ -74,7 +77,7 @@ struct bpf_ct_opts {
 struct nf_conn *bpf_xdp_ct_lookup(struct xdp_md *xdp_ctx,
 				  struct bpf_sock_tuple *bpf_tuple,
 				  __u32 tuple__sz,
-				  struct bpf_ct_opts *opts,
+				  struct bpf_ct_opts___local *opts,
 				  __u32 opts__sz) __ksym;
 void bpf_ct_release(struct nf_conn *ct) __ksym;
 
@@ -197,7 +200,7 @@ static __always_inline __u8 natpool_ct_found(struct xdp_md *ctx,
 	tup.ipv4.sport = sport;
 	tup.ipv4.dport = dport;
 
-	struct bpf_ct_opts opts = {
+	struct bpf_ct_opts___local opts = {
 		.netns_id = -1,
 		.l4proto = l4proto,
 	};
