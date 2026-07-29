@@ -75,6 +75,9 @@ static const char *stat_names[__ST_MAX] = {
 	[ST_UDP_ENGAGE_TICKS] = "udp_engage_ticks",
 	[ST_BADFLAGS_SEEN]    = "tcp_badflags_seen",
 	[ST_BADFLAGS_DROP]    = "tcp_badflags_dropped",
+	[ST_NATPOOL_SYN_SEEN] = "natpool_syn_seen",
+	[ST_NATPOOL_SYN_DROP] = "natpool_syn_dropped",
+	[ST_NATPOOL_FRAG_SEEN]= "natpool_frag_seen",
 };
 
 static int map_fd(const char *name)
@@ -121,6 +124,7 @@ static int do_load(const char *prefixes)
 			    .record_routed = 1, .measure_amp = 1,
 			    .drop_natpool_udp = 0, .udp_engage = 0,
 			    .udp_auto = 1, .drop_bad_flags = 0,
+			    .drop_natpool_syn = 0,
 			    .udp_pps_threshold = 200000 };
 	int carried = 0;
 
@@ -128,18 +132,31 @@ static int do_load(const char *prefixes)
 	 * defaults. Read the old cfg before its pin is cleared, so 'load + attach'
 	 * swaps the program without ever dropping back to count-only. udp_engage is
 	 * deliberately reset — it is detector state, and the new program starts with
-	 * empty rate counters; the timer re-derives it within a tick. */
+	 * empty rate counters; the timer re-derives it within a tick.
+	 *
+	 * Guard on the old map's value_size: if the struct config layout changed
+	 * (a field was added), a raw copy would misalign every field past the new
+	 * one. On a size mismatch we skip the carry-over and keep the fresh defaults
+	 * — the operator (or the autostart 'set' line) then re-applies the modes. */
 	{
 		int oldcfg = bpf_obj_get(PIN_DIR "/cfg");
 
 		if (oldcfg >= 0) {
+			struct bpf_map_info info = {};
+			__u32 ilen = sizeof(info);
 			__u32 z = 0;
 			struct config prev;
 
-			if (!bpf_map_lookup_elem(oldcfg, &z, &prev)) {
+			if (!bpf_obj_get_info_by_fd(oldcfg, &info, &ilen) &&
+			    info.value_size == sizeof(struct config) &&
+			    !bpf_map_lookup_elem(oldcfg, &z, &prev)) {
 				c = prev;
 				c.udp_engage = 0;
 				carried = 1;
+			} else if (info.value_size && info.value_size != sizeof(struct config)) {
+				fprintf(stderr, "cfg layout changed (old %u B, new %zu B): "
+					"not carrying over; re-apply modes with 'set'\n",
+					info.value_size, sizeof(struct config));
 			}
 			close(oldcfg);
 		}
@@ -338,6 +355,8 @@ static int do_set(int argc, char **argv)
 			c.udp_auto = !!v;
 		else if (sscanf(argv[i], "drop_bad_flags=%d", &v) == 1)
 			c.drop_bad_flags = !!v;
+		else if (sscanf(argv[i], "drop_natpool_syn=%d", &v) == 1)
+			c.drop_natpool_syn = !!v;
 		else if (sscanf(argv[i], "udp_pps_threshold=%d", &v) == 1)
 			c.udp_pps_threshold = (v < 0) ? 0 : (__u32)v;
 		else {
@@ -351,10 +370,10 @@ static int do_set(int argc, char **argv)
 	}
 	printf("cfg: drop_natpool=%d drop_routed=%d record_routed=%d measure_amp=%d "
 	       "drop_natpool_udp=%d udp_engage=%d udp_auto=%d drop_bad_flags=%d "
-	       "udp_pps_threshold=%u\n",
+	       "drop_natpool_syn=%d udp_pps_threshold=%u\n",
 	       c.drop_natpool, c.drop_routed, c.record_routed, c.measure_amp,
 	       c.drop_natpool_udp, c.udp_engage, c.udp_auto, c.drop_bad_flags,
-	       c.udp_pps_threshold);
+	       c.drop_natpool_syn, c.udp_pps_threshold);
 	return 0;
 }
 
@@ -412,7 +431,7 @@ usage:
 		"  %s detach <ifname>\n"
 		"  %s set drop_natpool=0|1 drop_routed=0|1 record_routed=0|1 measure_amp=0|1\n"
 		"      [drop_natpool_udp=0|1] [udp_engage=0|1] [udp_auto=0|1]\n"
-		"      [drop_bad_flags=0|1] [udp_pps_threshold=N]\n"
+		"      [drop_bad_flags=0|1] [drop_natpool_syn=0|1] [udp_pps_threshold=N]\n"
 		"  %s stats\n"
 		"  %s unload\n",
 		argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);

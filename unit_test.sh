@@ -91,7 +91,7 @@ check() {
 # Pin the starting policy explicitly: 'load' now carries the RUNNING config over
 # (so a production upgrade never reverts to count-only), which means the tests
 # must not assume load's fresh-install defaults.
-./loader set drop_natpool=0 drop_routed=0 record_routed=1 measure_amp=1 	drop_natpool_udp=0 udp_engage=0 udp_auto=0 drop_bad_flags=0 >/dev/null
+./loader set drop_natpool=0 drop_routed=0 record_routed=1 measure_amp=1 	drop_natpool_udp=0 udp_engage=0 udp_auto=0 drop_bad_flags=0 drop_natpool_syn=0 >/dev/null
 
 echo "=== building packets ==="
 gen_pkt "$DIR/t1_sa_pool.bin"      0800 0 "$SERVER_IP" "$NATPOOL_IP" 80 "$CT_POOL_DPORT" syn,ack
@@ -232,7 +232,35 @@ echo "=== T19: SYN+FIN outside the pool => untouched (seen+0, PASS) — blast ra
 b=$(stat tcp_badflags_seen); r=$(run "$DIR/t19_synfin_other.bin")
 check "badflags non-pool ignored" "$r" "$PASS" tcp_badflags_seen 0 "$b"
 
-./loader set udp_auto=1 udp_engage=0 drop_natpool_udp=0 drop_bad_flags=0 >/dev/null   # reset: detector on, count-only
+echo "=== T20: pure SYN -> pool, count-only (drop_natpool_syn=0) => PASS + natpool_syn_seen ==="
+./loader set drop_natpool_syn=0 >/dev/null
+gen_pkt "$DIR/t20_syn_pool.bin"    0800 0 "$SERVER_IP" "$NATPOOL_IP" 33333 50100 syn
+gen_pkt "$DIR/t22_syn_routed.bin"  0800 0 "$SERVER_IP" "$ROUTED_IP"  33333 50100 syn
+b=$(stat natpool_syn_seen); r=$(run "$DIR/t20_syn_pool.bin")
+check "syn-to-pool count-only" "$r" "$PASS" natpool_syn_seen 1 "$b"
+
+echo "=== T21: pure SYN -> pool, drop_natpool_syn=1 => DROP ==="
+./loader set drop_natpool_syn=1 >/dev/null
+b=$(stat natpool_syn_dropped); r=$(run "$DIR/t20_syn_pool.bin")
+check "syn-to-pool drop" "$r" "$DROP" natpool_syn_dropped 1 "$b"
+
+echo "=== T22: pure SYN -> class 2 (routed) => PASS, untouched (seen+0), pool only ==="
+b=$(stat natpool_syn_seen); r=$(run "$DIR/t22_syn_routed.bin")
+check "syn-to-routed ignored" "$r" "$PASS" natpool_syn_seen 0 "$b"
+
+echo "=== T23: non-first fragment -> pool => PASS + natpool_frag_seen (measurement) ==="
+# drop_natpool_syn=1 still armed: a non-first TCP fragment must NOT be misread as
+# a SYN and dropped; the global fragment guard passes it and only counts it.
+gen_udp "$DIR/t23_frag_pool.bin" "$SERVER_IP" "$NATPOOL_IP" 53 45000 1
+b=$(stat natpool_frag_seen); r=$(run "$DIR/t23_frag_pool.bin")
+check "frag-to-pool counted/pass" "$r" "$PASS" natpool_frag_seen 1 "$b"
+
+echo "=== T24: SYN/ACK -> pool regression still works (count-only) ==="
+./loader set drop_natpool=0 >/dev/null
+b=$(stat natpool_ct_miss); r=$(run "$DIR/t1_sa_pool.bin")
+check "synack regression" "$r" "$PASS" natpool_ct_miss 1 "$b"
+
+./loader set udp_auto=1 udp_engage=0 drop_natpool_udp=0 drop_bad_flags=0 drop_natpool_syn=0 >/dev/null   # reset: detector on, count-only
 
 echo
 [ "$fail" = 0 ] && echo "ALL TESTS PASSED" || echo "SOME TESTS FAILED"

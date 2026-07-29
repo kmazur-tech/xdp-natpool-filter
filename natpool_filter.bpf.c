@@ -328,14 +328,29 @@ int natpool_filter(struct xdp_md *ctx)
 	__u32 zero = 0;
 	struct config *c = bpf_map_lookup_elem(&cfg, &zero);
 
+	/* Non-first IP fragment (offset > 0): no L4 header lives at the ihl offset,
+	 * so the packet cannot be classified by port or conntrack-looked-up, and
+	 * MUST NOT be parsed as TCP/UDP: its payload would be misread as an L4
+	 * header (e.g. a fragment mistaken for a bare SYN and dropped). Count it if
+	 * it is bound for the pool (measurement, to size a future fragment policy)
+	 * and PASS. First fragments (offset == 0) carry L4 and fall through to the
+	 * normal branches. This sits BEFORE the UDP branch, so non-first UDP
+	 * fragments are counted here rather than in udp_pps; the drop behaviour is
+	 * unchanged (they always passed), only the accounting moves. */
+	if (ip->frag_off & bpf_htons(IP_FRAG_OFFSET_MASK)) {
+		if (classify(ip->daddr) == CLASS_NATPOOL)
+			bump(ST_NATPOOL_FRAG_SEEN);
+		return XDP_PASS;
+	}
+
 	/* UDP — only the NAT pool (class 1). Public routed clients (class 2) may
 	 * receive UDP initiated from outside and are asymmetric anyway, so UDP is
 	 * pool-only. Peacetime is cheap: bump a counter and PASS; the conntrack
 	 * lookup runs only when udp_engage is set (rate detector / manual).
-	 * Fragments (variant a): non-first fragments have no L4 header, so we PASS
-	 * them — dropping the first fragment orphans the rest (kernel defrag never
-	 * completes) and we must not blind-drop non-first frags (legit fragmented
-	 * DNS/EDNS0 responses). */
+	 * Non-first fragments are handled by the global guard above; here we only
+	 * ever see a first fragment or an unfragmented datagram. Dropping a first
+	 * fragment (miss) orphans the rest, which the kernel defragmenter discards
+	 * on timeout. */
 	if (ip->protocol == IPPROTO_UDP) {
 		if (classify(ip->daddr) != CLASS_NATPOOL)
 			return XDP_PASS;
@@ -351,8 +366,6 @@ int natpool_filter(struct xdp_md *ctx)
 			bpf_map_update_elem(&udp_pps, &dip, &one, BPF_NOEXIST);
 		}
 		if (!c || !c->udp_engage)
-			return XDP_PASS;
-		if (ip->frag_off & bpf_htons(IP_FRAG_OFFSET_MASK))
 			return XDP_PASS;
 		struct udphdr *udp = (void *)ip + ihl;
 		if ((void *)(udp + 1) > data_end)
@@ -391,9 +404,24 @@ int natpool_filter(struct xdp_md *ctx)
 		return XDP_PASS;
 	}
 
-	/* Outbound client SYN (pure SYN): record it so we can later recognise the
-	 * matching return SYN/ACK. Only for routed /32 clients (notrack class). */
 	if (tcp->syn && !tcp->ack) {
+		/* Inbound pure SYN to a NAT pool address = a connection being opened TO
+		 * the SNAT pool. Pools host no services, so this is junk (SYN flood /
+		 * scan). Stateless drop: a brand-new SYN has no conntrack entry to look
+		 * up, and the only legit case (active-FTP data, server sport 20) is
+		 * deliberately not supported. Checked by DESTINATION, so it never touches
+		 * an outbound client SYN (dst = internet) nor class 2 (routed clients may
+		 * run services). */
+		if (classify(ip->daddr) == CLASS_NATPOOL) {
+			bump(ST_NATPOOL_SYN_SEEN);
+			if (c && c->drop_natpool_syn) {
+				bump(ST_NATPOOL_SYN_DROP);
+				return XDP_DROP;
+			}
+			return XDP_PASS;
+		}
+		/* Outbound client SYN (pure SYN): record it so we can later recognise the
+		 * matching return SYN/ACK. Only for routed /32 clients (notrack class). */
 		if ((!c || c->record_routed) && classify(ip->saddr) == CLASS_ROUTED) {
 			struct flow_key k = {
 				.saddr = ip->saddr,

@@ -37,6 +37,13 @@ struct config {
 	__u8 drop_bad_flags;    /* 1 = XDP_DROP never-legitimate TCP flag combos to the pool
 				 * (null scan / SYN+FIN / SYN+RST / XMAS / FIN-no-ACK).
 				 * Stateless: no conntrack lookup, so it is always-on cheap. */
+	__u8 drop_natpool_syn;  /* 1 = XDP_DROP inbound pure SYN (syn && !ack) to the NAT pool.
+				 * Pools host no services -> a SYN opening a connection TO the
+				 * pool is junk (flood/scan). Stateless: a new SYN has no
+				 * conntrack entry anyway. NB: kills active-FTP data channels
+				 * (server->client SYN), deliberately unsupported. Pool only;
+				 * class 2 (routed clients) may run services -> never here. */
+	__u8 pad[3];            /* explicit pad to the u32 boundary (keep layout deterministic) */
 	__u32 udp_pps_threshold; /* per-IP UDP-to-pool pps that trips udp_engage (detector) */
 };
 
@@ -61,6 +68,9 @@ enum stat_idx {
 	ST_UDP_ENGAGE_TICKS, /* timer ticks where a pool IP was over threshold (engaged) */
 	ST_BADFLAGS_SEEN,    /* TCP to pool with a never-legitimate flag combo */
 	ST_BADFLAGS_DROP,    /* ...actually dropped (drop_bad_flags) */
+	ST_NATPOOL_SYN_SEEN, /* inbound pure SYN (syn && !ack) to a pool addr */
+	ST_NATPOOL_SYN_DROP, /* ...actually dropped (drop_natpool_syn) */
+	ST_NATPOOL_FRAG_SEEN,/* non-first IP fragment to a pool addr (measurement only) */
 	__ST_MAX
 };
 
