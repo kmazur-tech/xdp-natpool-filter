@@ -13,6 +13,9 @@ Trzy ochrony, wszystkie na adresy puli NAT:
 3. **Niepoprawne flagi TCP** — kombinacje, których poprawny stos nigdy nie wysyła
    (skan null, XMAS, SYN+FIN, SYN+RST, FIN bez ACK). Sprawdzane bez zaglądania do
    conntracka, więc kosztują tyle co nic i działają zawsze.
+4. **Przychodzące floody TCP SYN** - czyste SYN-y próbujące otworzyć połączenie
+   DO adresów puli (pule nie hostują usług, więc to śmieć). Domyślnie wyłączone;
+   zastrzeżenie: tnie też aktywny FTP, patrz README przed uzbrojeniem.
 
 ## Jak działa (w skrócie)
 Dla adresów **puli NAT** przychodzący pakiet jest sprawdzany w tablicy conntrack —
@@ -52,6 +55,7 @@ Linia cfg pokazuje wszystkie tryby, m.in.:
 - `drop_natpool=1` — **TCP** SYN/ACK do puli: BLOKUJE (0 = tylko liczy)
 - `drop_natpool_udp=1` — **UDP** do puli: BLOKUJE gdy detektor zaangażowany (0 = tylko liczy)
 - `drop_bad_flags=1` — niepoprawne flagi TCP do puli: BLOKUJE (0 = tylko liczy)
+- `drop_natpool_syn=1` - przychodzący czysty SYN do puli: BLOKUJE (0 = tylko liczy)
 - `udp_auto=1` — auto-detektor UDP włączony (steruje `udp_engage` sam)
 - `udp_engage=0/1` — **czy właśnie trwa atak UDP**: 0 = pokój, **1 = detektor wykrył flood i tnie**
 - `udp_pps_threshold` — próg pps/IP odpalający ochronę UDP
@@ -71,6 +75,9 @@ Najważniejsze liczniki:
 | `natpool_udp_dropped` | ile UDP realnie odrzucono (rośnie tylko podczas ataku UDP) |
 | `udp_engage_ticks` | ile razy (sekund) detektor UDP był zaangażowany — **>0 = był atak UDP** |
 | `tcp_badflags_seen` / `tcp_badflags_dropped` | TCP do puli z niepoprawnymi flagami / ile odrzucono |
+| `natpool_syn_seen` | **przychodzące czyste SYN-y do puli** (śmieć/skan/flood, kandydaci do dropa) |
+| `natpool_syn_dropped` | ile z nich realnie odrzucono (`drop_natpool_syn`) |
+| `natpool_frag_seen` | nie-pierwsze fragmenty IP do puli (tylko POMIAR, nic nie tnie) |
 | `miss_retransmissions` / `miss_unique_flows` | amplifikacja SYN/ACK = (unique+retrans)/unique |
 
 ### Bieżący rate (pakiety/s) — wklej i uruchom
@@ -95,6 +102,7 @@ L=/opt/xdp-natpool-filter/loader
 $L set drop_natpool=1      # / =0        TCP SYN/ACK: blokuj / tylko licz
 $L set drop_natpool_udp=1  # / =0        UDP: blokuj gdy atak / tylko licz
 $L set drop_bad_flags=1    # / =0        niepoprawne flagi TCP: blokuj / tylko licz
+$L set drop_natpool_syn=1  # / =0        przychodzący SYN do puli: blokuj / tylko licz (FTP!)
 $L set udp_pps_threshold=300000          # próg czułości detektora UDP (pps/IP)
 $L set udp_auto=0 udp_engage=1           # WYMUŚ blokowanie UDP (pomija detektor)
 $L set udp_auto=1                        # wróć do automatu

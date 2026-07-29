@@ -15,6 +15,9 @@ ochrony na adresy puli:
    (SSDP/NTP/DNS/CLDAP itd.) do adresów puli.
 3. **Niepoprawne flagi TCP** (bezstanowo, always-on) — kombinacje, których poprawny
    stos nigdy nie emituje (null scan, SYN+FIN, SYN+RST, XMAS, FIN bez ACK).
+4. **Przychodzące floody TCP SYN** (bezstanowo, opt-in) - czyste SYN-y otwierające
+   połączenia DO adresów puli; pule nie hostują usług, więc to z definicji
+   skan/flood (zastrzeżenie o aktywnym FTP poniżej).
 
 Filtr podpina się na **ingressie** interfejsu wyjściowego, korzysta z **kernelowego
 conntracka** jako źródła prawdy (dla puli nie trzyma własnego stanu) i przekazuje
@@ -71,6 +74,19 @@ adresie docelowym, nie po VLAN ID (przy rx-vlan-offload tag i tak jest zdjęty).
   lookupu; `classify()` odpala się dopiero dla (skrajnie rzadkiego) złego pakietu,
   więc ścieżka wspólna nic nie płaci. Sprawdzane PRZED gałęziami SYN, żeby SYN+FIN
   nie trafił do LRU jako „wychodzący SYN klienta". Flaga cfg `drop_bad_flags`.
+- **Klasa 1 - przychodzący SYN do puli:** czysty SYN (`syn && !ack`) z dst w puli
+  to próba otwarcia połączenia DO adresu SNAT. Pule nie hostują usług, więc to
+  śmieć (SYN flood / skan); przepuszczony kosztuje pełną ścieżkę kernela i
+  jednorazowy wpis conntrack per SYN. Po uzbrojeniu dropowany bezstanowo (nowy
+  SYN i tak nie ma wpisu conntrack do sprawdzenia). Tylko pula: klasa 2 nigdy
+  nie jest tykana (routowani klienci mogą hostować usługi), a wychodzący SYN
+  klienta (dst w internecie) nie pasuje. Flaga `drop_natpool_syn`, domyślnie
+  wyłączona; przed uzbrojeniem patrz zastrzeżenie o aktywnym FTP w Ograniczeniach.
+- **Nie-pierwsze fragmenty IP:** globalny strażnik PRZED gałęziami L4. Nie mają
+  nagłówka L4, więc nie wolno ich parsować jako TCP/UDP (payload zostałby wzięty
+  za nagłówek L4, np. błędnie za czysty SYN i zdropowany). Skierowane do puli są
+  liczone (`natpool_frag_seen`, tylko pomiar) i zawsze przepuszczane; docelowa
+  polityka fragmentów to ewentualny osobny krok.
 - **Klasa 1 — TCP SYN/ACK:** lookup w kernelowym conntracku. Jest wpis (odpowiedź
   na połączenie klienta) → PASS; brak → nieproszone → drop (w trybie blokowania).
   Always-on (SYN/ACK jest rzadki, lookup tani). Flaga `drop_natpool`.
@@ -79,8 +95,8 @@ adresie docelowym, nie po VLAN ID (przy rx-vlan-offload tag i tak jest zdjęty).
   lookupu conntracka. `bpf_timer` (skan co ~1 s) ustawia `udp_engage=1`, gdy UDP do
   pojedynczego adresu puli przekroczy `udp_pps_threshold`; dopiero wtedy datapath
   robi lookup UDP → miss = drop (w trybie blokowania). Po ustaniu ataku detektor sam
-  wyłącza `udp_engage`. Fragmenty: nie-pierwsze (offset>0) przepuszczane (kernelowy
-  defragmenter je porzuci); pierwszy fragment ma L4 i jest sprawdzany normalnie.
+  wyłącza `udp_engage`. Fragmenty: nie-pierwsze obsługuje globalny strażnik powyżej;
+  pierwszy fragment ma L4 i jest sprawdzany normalnie.
   Chroni CPU routera **i tablicę conntrack** (nieproszony UDP do puli, jeśli firewall
   go trackuje, tworzy śmieciowe wpisy). Flaga `drop_natpool_udp`, sterowanie
   detektorem: `udp_auto` (1 = timer steruje `udp_engage`), `udp_pps_threshold`.
@@ -106,6 +122,7 @@ Wszystko przełączane w locie przez `loader set`:
 | `drop_natpool` | drop SYN/ACK do puli bez wpisu conntrack | 0 (count-only) |
 | `drop_natpool_udp` | drop UDP do puli bez wpisu, gdy detektor zaangażowany | 0 |
 | `drop_bad_flags` | drop niepoprawnych kombinacji flag TCP do puli | 0 |
+| `drop_natpool_syn` | drop przychodzącego czystego SYN do puli (zastrzeżenie: aktywny FTP) | 0 |
 | `drop_routed` | drop SYN/ACK do klasy 2 bez zapisanego SYN | 0 |
 | `record_routed` | zapisuj wychodzące SYN-y klasy 2 do LRU | 1 |
 | `measure_amp` | mierz retransmisje missów (amplifikacja) | 1 |
@@ -139,7 +156,8 @@ make                                   # natpool_filter.bpf.o + loader (+ vmlinu
 ./loader load prefixes.conf            # load + pin do /sys/fs/bpf/natpool (count-only)
 ./loader attach bond0                  # XDP driver mode (bpf_link)
 ./loader set drop_natpool=1 drop_natpool_udp=1 drop_bad_flags=1   # >>> blokowanie <<<
-./loader set drop_natpool=0 drop_natpool_udp=0 drop_bad_flags=0   # tylko liczenie
+./loader set drop_natpool_syn=1        # dodatkowo tnij floody SYN (patrz: aktywny FTP)
+./loader set drop_natpool=0 drop_natpool_udp=0 drop_bad_flags=0 drop_natpool_syn=0   # tylko liczenie
 ./loader set udp_pps_threshold=200000  # prog czulosci detektora UDP (pps/IP)
 ./loader stats                         # liczniki (suma per-CPU)
 ./loader detach bond0                  # natychmiastowy rollback
@@ -227,6 +245,12 @@ Warstwy przetrwania aktualizacji kernela:
 
 ## Ograniczenia
 
+- **`drop_natpool_syn` tnie aktywny FTP.** Kanał danych aktywnego FTP to SYN
+  inicjowany przez serwer (port źródłowy 20) do klienta; conntrack trzyma go
+  tylko jako *expectation*, której `bpf_xdp_ct_lookup` nie widzi, więc bezstanowy
+  drop SYN-ów tnie też jego. Flaga jest domyślnie wyłączona; przed uzbrojeniem
+  potwierdź, że aktywny FTP przez pulę nie jest w Twojej sieci wymagany (krótki
+  capture SYN-ów do puli z portem źródłowym 20 rozstrzyga).
 - **Tylko IPv4.** IPv6 nie jest klasyfikowany ani filtrowany.
 - **Klasa 2 wymaga symetrii** ruchu przychodzącego (patrz wyżej) — przy asymetrii nic
   nie chroni.

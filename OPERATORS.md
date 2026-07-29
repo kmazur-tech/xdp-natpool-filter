@@ -15,6 +15,9 @@ Three protections, all for NAT pool addresses:
 3. **Bogus TCP flags** — combinations a valid stack never sends (null scan,
    XMAS, SYN+FIN, SYN+RST, FIN without ACK). Checked without touching
    conntrack, so they cost next to nothing and are always active.
+4. **Inbound TCP SYN floods** - pure SYNs trying to open connections TO pool
+   addresses (the pools host no services, so these are junk). Off by default;
+   caveat: also cuts active FTP, see the README before arming.
 
 ## How it works (in short)
 For **NAT pool** addresses an inbound packet is checked against the conntrack
@@ -57,6 +60,7 @@ The cfg line shows all modes, among them:
 - `drop_natpool=1` — **TCP** SYN/ACK to the pool: BLOCKS (0 = count only)
 - `drop_natpool_udp=1` — **UDP** to the pool: BLOCKS while the detector is engaged (0 = count only)
 - `drop_bad_flags=1` — bogus TCP flags to the pool: BLOCKS (0 = count only)
+- `drop_natpool_syn=1` - inbound pure SYN to the pool: BLOCKS (0 = count only)
 - `udp_auto=1` — UDP auto-detector enabled (drives `udp_engage` itself)
 - `udp_engage=0/1` — **is a UDP attack happening right now**: 0 = peacetime, **1 = the detector spotted a flood and is cutting**
 - `udp_pps_threshold` — per-IP pps threshold that engages UDP protection
@@ -76,6 +80,9 @@ The most important counters:
 | `natpool_udp_dropped` | UDP actually dropped (grows only during a UDP attack) |
 | `udp_engage_ticks` | how many times (seconds) the UDP detector was engaged — **>0 = there was a UDP attack** |
 | `tcp_badflags_seen` / `tcp_badflags_dropped` | TCP to the pool with bogus flags / how many dropped |
+| `natpool_syn_seen` | **inbound pure SYNs to the pool** (junk/scan/flood, drop candidates) |
+| `natpool_syn_dropped` | of those, actually dropped (`drop_natpool_syn`) |
+| `natpool_frag_seen` | non-first IP fragments to the pool (measurement ONLY, nothing dropped) |
 | `miss_retransmissions` / `miss_unique_flows` | SYN/ACK amplification = (unique+retrans)/unique |
 
 ### Current rate (packets/s) — paste and run
@@ -100,6 +107,7 @@ L=/opt/xdp-natpool-filter/loader
 $L set drop_natpool=1      # / =0        TCP SYN/ACK: block / count only
 $L set drop_natpool_udp=1  # / =0        UDP: block during an attack / count only
 $L set drop_bad_flags=1    # / =0        bogus TCP flags: block / count only
+$L set drop_natpool_syn=1  # / =0        inbound SYN to the pool: block / count only (FTP caveat)
 $L set udp_pps_threshold=300000          # UDP detector sensitivity (pps per IP)
 $L set udp_auto=0 udp_engage=1           # FORCE UDP blocking (bypasses the detector)
 $L set udp_auto=1                        # back to automatic

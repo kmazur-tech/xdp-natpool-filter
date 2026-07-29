@@ -15,6 +15,9 @@ BRASes and the conntrack table. Three protections, all for pool addresses:
    (SSDP/NTP/DNS/CLDAP etc.) aimed at pool addresses.
 3. **Bogus TCP flags** (stateless, always-on) — combinations a valid stack never
    emits (null scan, SYN+FIN, SYN+RST, XMAS, FIN without ACK).
+4. **Inbound TCP SYN floods** (stateless, opt-in) - pure SYNs opening
+   connections TO pool addresses; the pools host no services, so these are
+   scans/floods by definition (active-FTP caveat below).
 
 The filter attaches to the **ingress** of the uplink interface, uses the
 **kernel conntrack** as the source of truth (it keeps no state of its own for
@@ -75,6 +78,20 @@ rx-vlan-offload the tag is stripped anyway).
   `classify()` runs only for the (vanishingly rare) bad packet, so the common
   path pays nothing. Checked BEFORE the SYN branches, so a SYN+FIN can never be
   recorded in the LRU as an "outbound client SYN". Cfg flag `drop_bad_flags`.
+- **Class 1 - inbound TCP SYN:** a pure SYN (`syn && !ack`) whose destination
+  is a pool address is an attempt to open a connection TO an SNAT address. The
+  pools host no services, so it is junk (SYN flood / scan); letting it through
+  costs the full kernel path and a throwaway conntrack entry per SYN. When
+  armed it is dropped statelessly (a brand-new SYN has no conntrack entry to
+  look up anyway). Pool only: class 2 is never touched (routed clients may run
+  services), and an outbound client SYN (dst on the internet) never matches.
+  Flag `drop_natpool_syn`, default off; see the active-FTP caveat under
+  Limitations before arming.
+- **Non-first IP fragments:** a global guard BEFORE the L4 branches. They carry
+  no L4 header, so they must not be parsed as TCP/UDP (the payload would be
+  misread as an L4 header, e.g. mistaken for a bare SYN and dropped). Bound for
+  the pool they are counted (`natpool_frag_seen`, measurement only) and always
+  passed; a real fragment policy is a possible future step.
 - **Class 1 — TCP SYN/ACK:** lookup in the kernel conntrack. Entry exists
   (reply to a client connection) → PASS; none → unsolicited → drop (in blocking
   mode). Always-on (SYN/ACK is rare, the lookup is cheap). Flag `drop_natpool`.
@@ -84,9 +101,9 @@ rx-vlan-offload the tag is stripped anyway).
   ~1 s) sets `udp_engage=1` when UDP to a single pool address exceeds
   `udp_pps_threshold`; only then does the datapath do the UDP lookup → miss =
   drop (in blocking mode). When the attack subsides the detector clears
-  `udp_engage` by itself. Fragments: non-first fragments (offset>0) are passed
-  (the kernel defragmenter will abandon them); the first fragment carries L4
-  and is checked normally. This protects the router CPU **and the conntrack
+  `udp_engage` by itself. Fragments: non-first fragments are handled by the
+  global guard above; the first fragment carries L4 and is checked normally.
+  This protects the router CPU **and the conntrack
   table** (unsolicited UDP to the pool, if the firewall tracks it, creates junk
   entries). Flag `drop_natpool_udp`; detector controls: `udp_auto` (1 = the
   timer drives `udp_engage`), `udp_pps_threshold`.
@@ -114,6 +131,7 @@ Everything is switchable at runtime via `loader set`:
 | `drop_natpool` | drop SYN/ACK to the pool with no conntrack entry | 0 (count-only) |
 | `drop_natpool_udp` | drop UDP to the pool with no entry while the detector is engaged | 0 |
 | `drop_bad_flags` | drop bogus TCP flag combinations to the pool | 0 |
+| `drop_natpool_syn` | drop inbound pure SYN to the pool (active-FTP caveat) | 0 |
 | `drop_routed` | drop SYN/ACK to class 2 with no recorded SYN | 0 |
 | `record_routed` | record outbound class-2 SYNs into the LRU | 1 |
 | `measure_amp` | track miss retransmissions (amplification) | 1 |
@@ -148,7 +166,8 @@ make                                   # natpool_filter.bpf.o + loader (+ vmlinu
 ./loader load prefixes.conf            # load + pin under /sys/fs/bpf/natpool (count-only)
 ./loader attach bond0                  # XDP driver mode (bpf_link)
 ./loader set drop_natpool=1 drop_natpool_udp=1 drop_bad_flags=1   # >>> blocking <<<
-./loader set drop_natpool=0 drop_natpool_udp=0 drop_bad_flags=0   # count-only
+./loader set drop_natpool_syn=1        # also drop inbound SYN floods (see active-FTP caveat)
+./loader set drop_natpool=0 drop_natpool_udp=0 drop_bad_flags=0 drop_natpool_syn=0   # count-only
 ./loader set udp_pps_threshold=200000  # UDP detector sensitivity (pps per IP)
 ./loader stats                         # counters (per-CPU sums)
 ./loader detach bond0                  # instant rollback
@@ -241,6 +260,12 @@ Layers that survive a kernel update:
 
 ## Limitations
 
+- **`drop_natpool_syn` cuts active FTP.** The active-FTP data channel is a
+  server-initiated SYN (source port 20) to the client; conntrack tracks it only
+  as an *expectation*, which `bpf_xdp_ct_lookup` cannot see, so the stateless
+  SYN drop also cuts it. The flag is off by default; before arming it, confirm
+  active FTP through the pool is not a requirement in your network (a short
+  capture of pool-bound SYNs with source port 20 settles it).
 - **IPv4 only.** IPv6 is neither classified nor filtered.
 - **Class 2 requires symmetric** inbound traffic (see above) — under asymmetry
   it protects nothing.
